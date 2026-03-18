@@ -1,0 +1,1 @@
+This repository implements a non-parametric background modeling framework using Gaussian Processes (GP) to calculate global significance ($Z_{global}$) across multiple triggers and mass channels. By replacing rigid 5-parameter power-law fits with GPs constrained by detector-specific length-scales, this tool mitigates functional form bias and prevents signal absorption.
