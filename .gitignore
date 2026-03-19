@@ -10,6 +10,8 @@ __pycache__/
 
 # Ignore local figures/output
 results/
+data/
+fits/
 plots/*.pdf
 plots/*.png
 plots/

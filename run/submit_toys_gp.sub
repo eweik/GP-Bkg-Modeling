@@ -1,0 +1,22 @@
+# run/submit_toys_gp.sub
+
+executable              = run/condor_wrapper_gp.sh
+arguments               = $(trigger) $(method) $(toys_per_job) $(ProcId) $(min_len)
+
+output                  = /dev/null
+error                   = /dev/null
+log                     = run/logs/job_GP.$(trigger).$(method).$(ClusterId).log
+
+should_transfer_files   = YES
+when_to_transfer_output = ON_EXIT
+
+transfer_input_files    = src, python, fits, data
+transfer_output_files   = results
+
++JobFlavour             = "workday"
+request_cpus            = 1
+request_memory          = 2GB
+max_retries             = 3
+
+# Queue the dynamic number of jobs
+queue $(n_jobs)

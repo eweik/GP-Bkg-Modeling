@@ -8,7 +8,8 @@ The primary objective of this codebase is to establish a mathematically robust, 
 1. [Physics Motivation](#physics-motivation)
 2. [The Advanced Gaussian Process Architecture](#the-advanced-gaussian-process-architecture)
 3. [Repository Structure](#repository-structure)
-4. [Running the Validation Pipeline](#running-the-validation-pipeline)
+4. [Script Directory & Execution Guide](#script-directory--execution-guide)
+5. [Global Significance & Look-Elsewhere Effect (LEE)](#global-significance--look-elsewhere-effect-lee)
 
 ---
 
@@ -30,7 +31,7 @@ To prevent the GP from overfitting the sparse, high-mass tails (the "Floating Ke
 
 1. **Log-X Transformation:** The mass variable is transformed to $X = \ln(m)$. This ensures that a stationary RBF length scale correctly mirrors the ATLAS detector's fractional mass resolution, which widens linearly at higher energies ($\frac{\sigma_m}{m} \approx \text{const}$).
 2. **Parametric Mean Prior:** The GP fits the *log-ratio* of the data to the legacy 5-parameter fit. In completely empty bins at the kinematic limit, the GP safely decays back to the physical 5-parameter QCD prediction.
-3. **Locked Kernel Extraction:** To prevent the GP from absorbing genuine new physics during signal extraction, the covariance matrix (length scale and amplitude) is globally optimized on the background-only hypothesis and *frozen* prior to evaluating the Signal + Background hypothesis.
+3. **Locked Kernel Extraction:** To prevent the GP from absorbing genuine new physics during signal extraction, the covariance matrix (length scale and amplitude) is globally optimized on the background-only hypothesis and *frozen* prior to evaluating the Signal + Background hypothesis. This allows toy pseudo-experiments to be evaluated via rapid linear algebra matrix multiplication rather than slow, iterative MINUIT fits.
 
 ---
 
@@ -38,49 +39,93 @@ To prevent the GP from overfitting the sparse, high-mass tails (the "Floating Ke
 
 * `fits/` - JSON files containing baseline 5-parameter fit values.
 * `plots/` - Generated diagnostic and validation plots.
-  * `advanced_comparisons/` - Spectral overlays of data vs. models.
-  * `efficiency_comparisons/` - Signal absorption/efficiency test results.
-  * `pull_diagnostics/` - KS tests and Q-Q plots for normality.
-  * `spurious_comparisons/` - Spurious signal test results.
 * `python/` - Core Python execution scripts.
 * `root/` - Input ROOT files (1% blinded data).
-* `run/` - Bash wrapper scripts for pipeline execution.
+* `results/` - Output `.npy` arrays containing global toy statistics.
+* `run/` - Bash wrapper scripts for pipeline and HTCondor execution.
+* `data/` - Contains `.npz` Copula matrices for correlated toy generation.
 
 ---
 
-## Running the Validation Pipeline
+## Script Directory & Execution Guide
 
-The pipeline is executed via bash wrappers in the `run/` directory. All scripts support standard arguments to isolate specific triggers and channels, or run the entire matrix.
+Below is a complete glossary of the execution scripts located in the `run/` (and `python/`) directories. They are grouped by their role in the analysis pipeline.
 
-**Global Arguments:**
-* `-t, --trigger`: Specify a trigger (e.g., `t1`) or `all`.
-* `-c, --channel`: Specify a channel (e.g., `jj`) or `all`.
-* `-m, --min-len`: The minimum GP log-space length scale bound (default: `0.15`, enforcing a smoothing window of $\ge 15\%$ of the local mass).
+### Part 1: Background Validation & Diagnostics
+* **`run_advanced_diagnostics.sh`**
+  * **Function:** Evaluates the normality of residuals for both the 5-parameter and Advanced GP models. Computes Kolmogorov-Smirnov (KS) $p$-values and generates Q-Q plots to identify heavy tails.
+  * **Usage:** `./run/run_advanced_diagnostics.sh -m 0.15`
+* **`run_advanced_comparisons.sh`**
+  * **Function:** Generates spectral overlays of the 1% data against the legacy 5-parameter fit and the Advanced GP fit, including pull distributions.
+  * **Usage:** `./run/run_advanced_comparisons.sh -m 0.15`
+* **`run_pull_diagnostics.sh` / `run_comparisons.sh`**
+  * **Function:** *Legacy scripts.* Runs basic diagnostics and spectral comparisons solely on the 5-parameter model.
 
-### 1. Pull Diagnostics
-Evaluates the normality of the residuals for both the 5-parameter and GP models. Calculates the Kolmogorov-Smirnov (KS) $p$-value and generates Q-Q plots to identify heavy tails.
+### Part 2: Signal Injection & Spurious Signals
+* **`run_efficiency_comparison.sh`**
+  * **Function:** Runs a head-to-head signal efficiency comparison between the floating 5-parameter model and the locked Advanced GP. Tests if the model is too flexible (Signal Absorption).
+  * **Usage:** `./run/run_efficiency_comparison.sh -t [trigger] -c [channel] -M [asimov|toys] -m 0.15 --toys [N]`
+* **`run_spurious_comparison.sh`**
+  * **Function:** Fits the background-only data with a Signal+Background hypothesis to measure artificial signal extraction ($S_{spur}$). Tests if the model is too rigid (Spurious Signal).
+  * **Usage:** `./run/run_spurious_comparison.sh -t [trigger] -c [channel] -M [asimov|toys] -m 0.15 --toys [N]`
+* **`run_gp_efficiency.sh` / `run_injection_test.sh`**
+  * **Function:** *Legacy/Debug scripts.* Evaluates raw GP efficiency at specific length scales, or tests basic signal absorption for the 5-parameter model. 
 
-`./run/run_advanced_diagnostics.sh -m 0.15`
+### Part 3: Toy Generation & LEE Mapping
+* **`run_all_toys_gp.sh`**
+  * **Function:** Runs local pseudo-experiments (toys) using the GP model to map the global significance, bypassing HTCondor. Excellent for fast, small-scale testing.
+  * **Usage:** `./run/run_all_toys_gp.sh [trigger] [number_of_toys]`
+* **`local_to_global_z_gp.py`**
+  * **Function:** Post-processing script. Reads the generated `.npy` toy arrays, maps Local Significance ($Z_{local}$) to Global Significance ($Z_{global}$), and plots the Look-Elsewhere Effect (LEE) survival curve.
+  * **Usage:** `python3 python/local_to_global_z_gp.py --trigger [trigger] --ExpectedLocalZvalue [Z]`
 
-### 2. Spectral Comparisons
-Generates visual overlays of the 1% data, the legacy 5-parameter fit, and the Advanced GP fit, including pull distributions and empirical Gaussian fits of the errors.
+### Part 4: HTCondor Infrastructure
+* **`submit_all_triggers_gp.sh`**
+  * **Function:** The master submission script. Submits massive batch jobs to the HTCondor cluster for all 7 triggers and all 3 generation methods (`naive`, `linear`, `copula`), splitting the total toys into chunks.
+  * **Usage:** `./run/submit_all_triggers_gp.sh [total_toys_per_method] [toys_per_job]`
+* **`submit_one_trigger_gp.sh`**
+  * **Function:** Submits HTCondor batch jobs for a single, specific trigger.
+  * **Usage:** `./run/submit_one_trigger_gp.sh [trigger] [total_toys] [toys_per_job] [min_len]`
+* **`submit_toys_gp.sub`**
+  * **Function:** The HTCondor configuration file (ClassAd). Defines memory requests, job flavors, and file transfer rules. *Not executed directly.*
+* **`condor_wrapper_gp.sh`**
+  * **Function:** The executable run by the isolated Condor worker nodes. Sets up the LCG environment and executes the Python toy script. *Not executed directly.*
 
-`./run/run_advanced_comparisons.sh -m 0.15`
+---
 
-### 3. Signal Extraction Efficiency
-Tests for **Signal Absorption** (Is the model too flexible?). Injects a $5\sigma$ Gaussian anomaly (3% mass resolution) into the background and measures the fraction of signal successfully extracted. Supports both perfect mathematical evaluation (`asimov`) and stability testing via Poisson fluctuations (`toys`).
+## Global Significance & Look-Elsewhere Effect (LEE)
 
-**Fast Asimov Test (Mathematical Bias):**
-`./run/run_efficiency_comparison.sh -t t1 -c jj -M asimov -m 0.15`
+Once the GP background model is validated, we map the Global Significance ($Z_{global}$) across the entire phase space by generating massive sets of pseudo-experiments (toys). This establishes the exact Local Significance ($Z_{local}$) threshold required to claim a discovery prior to unblinding the data.
 
-**Stability Test with Poisson Toys:**
-`./run/run_efficiency_comparison.sh -t all -c all -M toys --toys 20 -m 0.15`
+Toys are generated using three methodologies:
+1. `naive`: Standard independent Poisson fluctuations.
+2. `linear`: Highly correlated channel fluctuations.
+3. `copula`: Fully correlated multi-channel fluctuations derived from data-driven covariance matrices.
 
-### 4. Spurious Signal Tests
-Tests for **Model Rigidity** (Does the model hallucinate fake signals?). Fits the background-only data with the Signal + Background hypothesis to measure artificial signal extraction ($S_{spur}$). A successful model should maintain an average $\frac{|S_{spur}|}{\sigma_{stat}}$ well below 0.5.
+### Step 1: Local Testing
+Before submitting to HTCondor, verify the pipeline locally by generating a small batch of toys. 
 
-**Evaluate Spurious Signal across all channels using 20 toys per mass point:**
-`./run/run_spurious_comparison.sh -t all -c all -M toys --toys 20 -m 0.15`
+*Run 10 toys for trigger t1 directly in the terminal:*
+`./run/run_all_toys_gp.sh t1 10`
+
+### Step 2: HTCondor Batch Submission
+Scale the toy generation across the CERN HTCondor cluster. 
+
+*Submit 100,000 toys for trigger t1 (split into chunks of 1,000 per job):*
+`./run/submit_one_trigger_gp.sh t1 100000 1000`
+
+*Submit 100,000 toys for ALL 7 triggers simultaneously:*
+`./run/submit_all_triggers_gp.sh 100000 1000`
+
+Use `condor_q` to monitor the jobs. Output statistics are saved as numpy arrays in the `results/` directory.
+
+### Step 3: Mapping the LEE Survival Curve
+Once the Condor jobs complete, merge the output arrays and plot the LEE survival curve.
+
+*Calculate what Global Z corresponds to an expected Local Z of 5.0:*
+`python3 python/local_to_global_z_gp.py --trigger t1 --ExpectedLocalZvalue 5.0`
+
+The resulting plot (`plots/LEE_Curve_GP_t1.png`) will display the survival curves for the Naive, Linear, and Copula methods against standard ATLAS discovery thresholds.
 
 ---
 
