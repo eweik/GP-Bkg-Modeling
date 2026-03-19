@@ -1,0 +1,16 @@
+# Ignore python cache
+__pycache__/
+*.pyc
+
+# Ignore large physics data formats
+*.root
+*.npy
+*.h5
+*.csv
+
+# Ignore local figures/output
+results/
+plots/*.pdf
+plots/*.png
+plots/
+run/logs/
