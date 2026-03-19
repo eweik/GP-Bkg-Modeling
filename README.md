@@ -1,6 +1,6 @@
-# Machine Learning for the ATLAS MET Trigger and Anomaly Detection: Background Modeling
+# Machine Learning for the Jet+X Background Modeling in ATLAS Anomaly Detection Searches
 
-This repository contains the background modeling and validation framework for the Machine Learning-based Anomaly Detection search within the ATLAS MET Trigger phase space. 
+This repository contains the background modeling and validation framework for the Machine Learning-based Anomaly Detection search within the ATLAS experiment. 
 
 The primary objective of this codebase is to establish a mathematically robust, non-parametric background model capable of accurately estimating QCD backgrounds in phase spaces that have been kinematically sculpted by Autoencoders. This framework replaces rigid parametric models with an Advanced Gaussian Process (GP), enabling stable evaluation of local anomalies and the subsequent calculation of Global Significance ($Z_{global}$) and Look-Elsewhere Effect (LEE) survival curves.
 
