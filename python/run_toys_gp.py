@@ -67,26 +67,23 @@ def main(args):
     # 1. Build Background and Lock GP Kernels (No ROOT files needed)
     for m in mass_types:
         fitfile_nom = os.path.join(base_dir, "fits", f"fitme_p5_{args.trigger}_{m}.json")
-        fitfile_alt = os.path.join(base_dir, "fits", f"fitme_p5alt_{args.trigger}_{m}.json")
         
         if not os.path.exists(fitfile_nom):
             continue
             
         try:
-            with open(fitfile_nom, "r") as j_nom, open(fitfile_alt, "r") as j_alt:
-                d_nom, d_alt = json.load(j_nom), json.load(j_alt)
-                
+            with open(fitfile_nom, "r") as j_nom:
+                d_nom = json.load(j_nom)
+
                 fmin_val, fmax_val = float(d_nom['fmin']), float(d_nom['fmax'])
                 v_bins = ATLAS_BINS[(ATLAS_BINS >= fmin_val) & (ATLAS_BINS <= fmax_val)]
                 c = (v_bins[:-1] + v_bins[1:]) / 2
                 widths = np.diff(v_bins)
-                
+
                 counts_nom = FiveParam(args.cms, c, *[float(p) for p in d_nom['parameters']]) * widths
-                counts_alt = FiveParam_alt(args.cms, c, *[float(p) for p in d_alt['parameters']]) * widths
-                
+
                 if np.sum(counts_nom) > 0:
                     bkg_expectations[m] = counts_nom
-                    syst_envelopes[m] = np.abs(counts_alt - counts_nom)
                     channel_info[m] = {'centers': c, 'bins': v_bins, 'widths': widths}
                     
                     bkg_density = counts_nom / widths
