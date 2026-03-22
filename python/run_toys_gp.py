@@ -67,7 +67,6 @@ def main(args):
     # 1. Build Background and Lock GP Kernels (No ROOT files needed)
     for m in mass_types:
         fitfile_nom = os.path.join(base_dir, "fits", f"fitme_p5_{args.trigger}_{m}.json")
-        
         if not os.path.exists(fitfile_nom):
             continue
             
