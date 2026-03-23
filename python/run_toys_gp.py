@@ -146,44 +146,92 @@ def main(args):
         elif args.method == "linear":
             jj_b = bkg_expectations['jj']
             jj_pseudo = np.random.poisson(jj_b)
-            jj_res_raw = np.where(jj_b > 0, (jj_pseudo - jj_b) / jj_b, 0)
-            
+            jj_centers = channel_info['jj']['centers']
+
             for m, b in bkg_expectations.items():
                 if m == 'jj':
                     toy_counts = jj_pseudo
                 else:
                     ov_frac = overlap_map.get(m, 0.1)
-                    mapped_res = np.interp(channel_info[m]['centers'], channel_info['jj']['centers'], jj_res_raw)
-                    ov_counts = (b * ov_frac) * (1 + mapped_res)
-                    ind_b = b * (1 - ov_frac)
+                    m_centers = channel_info[m]['centers']
+
+                    # 1. Exact Bin Alignment
+                    jj_b_aligned = np.zeros(len(b))
+                    jj_pseudo_int = np.zeros(len(b), dtype=int)
+
+                    for i, mc in enumerate(m_centers):
+                        dist = np.abs(jj_centers - mc)
+                        min_idx = np.argmin(dist)
+                        if dist[min_idx] < 1.0:
+                            jj_b_aligned[i] = jj_b[min_idx]
+                            jj_pseudo_int[i] = jj_pseudo[min_idx]
+
+                    # 2. Bivariate Poisson math (Safe against analytic fit crossing)
+                    # The shared expectation cannot physically exceed the inclusive jj expectation
+                    lambda_shared = np.minimum(b * ov_frac, jj_b_aligned)
+
+                    # Calculate strict transfer probability (Guaranteed between 0 and 1)
+                    p_transfer = lambda_shared / np.maximum(jj_b_aligned, 1e-15)
+
+                    # 3. Draw correlated events
+                    ov_counts = np.random.binomial(jj_pseudo_int, p_transfer)
+
+                    # 4. Draw independent events to PERFECTLY restore the target sub-channel mean (b)
+                    ind_b = np.maximum(0, b - lambda_shared)
                     ind_counts = np.random.poisson(ind_b)
-                    toy_counts = np.maximum(0, np.round(ov_counts + ind_counts).astype(int))
-                
+
+                    # Total channel toy is exact integer math with a guaranteed mean of 'b'
+                    toy_counts = ov_counts + ind_counts
+
+                # --- GP Fitting and BumpHunter Evaluation ---
                 c, w = channel_info[m]['centers'], channel_info[m]['widths']
                 toy_density = toy_counts / w
                 toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w
-                
+
                 gp_density, fit_ok = fit_gp_locked(c, toy_density, toy_err_density, bkg_prior_densities[m], locked_kernels[m])
-                if not fit_ok: 
+                if not fit_ok:
                     toy_successful = False; break
-                
+
                 active_bkg = gp_density * w
                 toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, active_bkg))
+
 
         elif args.method == "copula":
             sampled = matrix[np.random.choice(len(matrix), size=np.random.poisson(n_mother_exp), replace=True)]
             
             for m, b in bkg_expectations.items():
                 idx = col_names.index(f"M{m}")
-                v = sampled[sampled[:, idx] >= 0, idx]
-                if len(v) == 0: continue
                 
-                target_n = int(len(v) * channel_scales[m])
-                if target_n < len(v): v = np.random.choice(v, size=target_n, replace=False)
+                # 1. Determine EXACT target yield based on analytic fit
+                expected_yield = np.sum(b)
+                target_n = np.random.poisson(expected_yield)
                 
-                U = np.clip(v + np.random.normal(0, 0.0005, size=len(v)), 0, 1)
-                toy_counts = np.bincount(np.clip(np.searchsorted(cdfs[m], U), 0, len(b)-1), minlength=len(b))
+                if target_n == 0:
+                    toy_counts = np.zeros(len(b), dtype=int)
+                else:
+                    # 2. Extract valid correlated quantiles
+                    v_correlated = sampled[sampled[:, idx] >= 0, idx]
+                    k = len(v_correlated)
+                    
+                    # 3. Reconcile matrix quantiles with target yield
+                    if k >= target_n:
+                        U_final = np.random.choice(v_correlated, size=target_n, replace=False)
+                    else:
+                        independent_n = target_n - k
+                        U_independent = np.random.uniform(0, 1, size=independent_n)
+                        U_final = np.concatenate([v_correlated, U_independent])
+                        
+                    # 4. Safe uniform dither to break up bootstrap duplicates
+                    U_final += np.random.uniform(-0.0002, 0.0002, size=target_n)
+                    
+                    # 5. Boundary Reflection to prevent high-mass tail pile-up
+                    U_final = np.abs(U_final)
+                    U_final = np.where(U_final >= 1.0, 1.99999 - U_final, U_final)
+                    
+                    # 6. Map to physical histogram
+                    toy_counts = np.bincount(np.searchsorted(cdfs[m], U_final), minlength=len(b))
                 
+                # --- GP Fitting and BumpHunter Evaluation ---
                 c, w = channel_info[m]['centers'], channel_info[m]['widths']
                 toy_density = toy_counts / w
                 toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w

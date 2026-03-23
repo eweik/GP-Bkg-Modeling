@@ -13,7 +13,8 @@ when_to_transfer_output = ON_EXIT
 transfer_input_files    = src, python, fits, data
 transfer_output_files   = results
 
-+JobFlavour             = "workday"
+# +JobFlavour             = "workday"
++JobFlavour             = "longlunch"
 request_cpus            = 1
 request_memory          = 2GB
 max_retries             = 3
