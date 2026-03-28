@@ -11,7 +11,7 @@ else
 fi
 
 FITS_DIR="/afs/cern.ch/user/e/edweik/private/GlobalSignificanceSearch/fits"
-MIN_LEN="0.12"
+MIN_LEN="0.15"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in

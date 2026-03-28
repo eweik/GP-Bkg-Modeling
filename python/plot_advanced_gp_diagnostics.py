@@ -254,7 +254,7 @@ def main():
     print("\n\n" + "="*85)
     print(f"{'ADVANCED GP PULL DIAGNOSTICS SUMMARY':^85}")
     print("="*85)
-    print(f"| {'Trig':<4} | {'Chan':<4} || {'KS p-val (Leg)':<14} | {'KS p-val (Adv)':<13} || {'RMS (Leg)':<9} | {'RMS (Adv)':<9} |")
+    print(f"| {'Trig':<4} | {'Chan':<4} || {'KS p-val (5p)':<14} | {'KS p-val (Adv)':<13} || {'RMS (5p)':<9} | {'RMS (Adv)':<9} |")
     print("-" * 85)
     
     for row in results_table:

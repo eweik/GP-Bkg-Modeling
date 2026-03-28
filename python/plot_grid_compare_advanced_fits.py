@@ -6,7 +6,7 @@ import uproot
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import norm
+from scipy.stats import norm, kstest
 import warnings
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
@@ -26,7 +26,6 @@ ATLAS_BINS = np.array([
 ])
 
 def ParametricFit(Ecm, x_center, p):
-    """Nominal 5-parameter dN/dm density function."""
     p_safe = np.zeros(5)
     for i in range(min(len(p), 5)):
         p_safe[i] = p[i]
@@ -35,14 +34,16 @@ def ParametricFit(Ecm, x_center, p):
     return p_safe[0] * np.power(np.maximum(1.0 - x, 1e-10), p_safe[1]) * np.power(x, (p_safe[2] + p_safe[3] * nlog + p_safe[4] * nlog * nlog))
 
 def ParametricFit_alt(Ecm, x_center, p):
-    """Alternative 5-parameter dN/dm density used for systematic uncertainty."""
     p_safe = np.zeros(5)
     for i in range(min(len(p), 5)):
         p_safe[i] = p[i]
     x = x_center / Ecm
     nlog = np.log(x)
-    # Using np.maximum to prevent domain errors with sqrt and fractional powers
     return p_safe[0] * np.power(np.maximum(1.0 - x, 1e-10), p_safe[1]) * np.power(x, (p_safe[2] + p_safe[3] * nlog + p_safe[4] / np.sqrt(np.maximum(x, 1e-10))))
+
+def format_pval(p):
+    """Formats the p-value nicely for the legend."""
+    return "<0.001" if p < 0.001 else f"{p:.3f}"
 
 def fit_gp_density_advanced(centers, density, density_err, parametric_density, min_len_scale_log=0.12):
     mask = density > 0
@@ -50,11 +51,9 @@ def fit_gp_density_advanced(centers, density, density_err, parametric_density, m
         return density, np.zeros_like(density), False
 
     X_log = np.log(centers[mask]).reshape(-1, 1)
-    
     y_data = density[mask]
     y_param = parametric_density[mask]
     y_target = np.log(y_data / np.maximum(y_param, 1e-15))
-    
     y_err_target = density_err[mask] / y_data
 
     kernel = C(1.0, (1e-3, 1e2)) * RBF(
@@ -88,72 +87,76 @@ def get_atlas_binned_data(hist):
     return binned_counts
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare Parametric fits against Advanced GP models.")
+    parser = argparse.ArgumentParser(description="Generate 9-panel grids for Advanced GP Spectra and Pull Distributions.")
     parser.add_argument("--root-dir", type=str, default="/afs/cern.ch/user/e/edweik/private/new_ad_files")
     parser.add_argument("--fits-dir", type=str, default="/afs/cern.ch/user/e/edweik/private/GlobalSignificanceSearch/fits")
     parser.add_argument("--sqrts", type=float, default=13000.0)
-    parser.add_argument("--min-len", type=float, default=0.15, help="Log-space length scale bound")
+    parser.add_argument("--min-len", type=float, default=0.15)
     args = parser.parse_args()
 
-    out_dir = "plots/advanced_comparisons"
+    out_dir = "plots/advanced_comparisons_grid"
     os.makedirs(out_dir, exist_ok=True)
 
     channels = ["jj", "jb", "bb", "be", "bm", "bg", "je", "jm", "jg"]
     triggers = [f"t{i}" for i in range(1, 8)]
 
-    completed, skipped = 0, 0
-
-    print(f"\nStarting Advanced GP Spectral Comparison (Length Scale > {args.min_len*100:.1f}%)")
-    print("-" * 50)
+    print(f"\nStarting 9-Panel Advanced GP Generation (Length Scale > {args.min_len*100:.1f}%)")
+    print("-" * 60)
 
     for t in triggers:
         root_file_path = os.path.join(args.root_dir, f"data1percent_{t}_HAE_RUN23_nominal_10PB.root")
+        root_exists = os.path.exists(root_file_path)
         
-        if not os.path.exists(root_file_path):
-            print(f"[SKIP] {t.upper()}: ROOT file missing.")
-            skipped += len(channels)
-            continue
-            
-        try:
-            root_file = uproot.open(root_file_path)
-        except Exception as e:
-            print(f"[SKIP] {t.upper()}: ROOT read error ({e}).")
-            skipped += len(channels)
-            continue
+        root_file = None
+        if root_exists:
+            try:
+                root_file = uproot.open(root_file_path)
+            except Exception as e:
+                print(f"[SKIP] {t.upper()}: ROOT read error ({e}).")
+                root_file = None
 
-        for ch in channels:
+        # Initialize Figures for this trigger
+        fig_spec, axes_spec = plt.subplots(3, 3, figsize=(18, 15))
+        fig_pull, axes_pull = plt.subplots(3, 3, figsize=(18, 15))
+        
+        fig_spec.suptitle(f'Spectral Fits - Trigger {t.upper()}', fontsize=20, fontweight='bold', y=0.96)
+        fig_pull.suptitle(f'Pull Distributions (Fit vs Data) - Trigger {t.upper()}', fontsize=20, fontweight='bold', y=0.96)
+
+        axes_spec_flat = axes_spec.flatten()
+        axes_pull_flat = axes_pull.flatten()
+
+        for i, ch in enumerate(channels):
+            ax_spec = axes_spec_flat[i]
+            ax_pull = axes_pull_flat[i]
+
             hist_name = f"M{ch}_data1percent"
-            
-            # Note: adjust these prefixes if your JSON files are named differently
             json_file_nom = os.path.join(args.fits_dir, f"fitme_p5_{t}_{ch}.json")
             json_file_alt = os.path.join(args.fits_dir, f"fitme_p5alt_{t}_{ch}.json")
 
-            if hist_name not in root_file:
-                print(f"[SKIP] {t.upper()} {ch.upper()}: Histogram missing in ROOT.")
-                skipped += 1
-                continue
-            if not os.path.exists(json_file_nom):
-                print(f"[SKIP] {t.upper()} {ch.upper()}: Nominal JSON file missing.")
-                skipped += 1
+            # Check if Data/Fits exist
+            missing_data = False
+            if root_file is None or hist_name not in root_file or not os.path.exists(json_file_nom):
+                missing_data = True
+
+            if missing_data:
+                for ax in [ax_spec, ax_pull]:
+                    ax.set_title(f'$M_{{{ch}}}$ (Data/Fit Missing)', fontsize=14)
+                    ax.axis('off')
                 continue
 
-            # Load Nominal JSON
+            # Load Data
             with open(json_file_nom, "r") as f:
                 d_nom = json.load(f)
-            
             fmin, fmax = float(d_nom['fmin']), float(d_nom['fmax'])
             params_nom = d_nom['parameters']
             fit_name = str(d_nom.get('name', 'p5')).upper()
 
-            # Load Alternative JSON (if exists)
             alt_exists = False
             if os.path.exists(json_file_alt):
                 with open(json_file_alt, "r") as f:
                     d_alt = json.load(f)
                 params_alt = d_alt['parameters']
                 alt_exists = True
-            else:
-                print(f"[WARN] {t.upper()} {ch.upper()}: Alt JSON missing, will plot without it.")
 
             full_counts = get_atlas_binned_data(root_file[hist_name])
             centers_full = (ATLAS_BINS[:-1] + ATLAS_BINS[1:]) / 2
@@ -167,61 +170,50 @@ def main():
             data_density = data_counts / w_fit
             data_err_density = np.sqrt(np.maximum(data_counts, 1.0)) / w_fit
 
-            # Evaluate Nominal Model
+            # Evaluate Fits
             fit_leg_counts = ParametricFit(args.sqrts, c_fit, params_nom)
             fit_leg_density = fit_leg_counts / w_fit
             
-            # Evaluate Alternative Model
             if alt_exists:
                 fit_alt_counts = ParametricFit_alt(args.sqrts, c_fit, params_alt)
                 fit_alt_density = fit_alt_counts / w_fit
 
-            # Evaluate Advanced GP Model (Trained ONLY on the nominal residuals)
             gp_density, gp_err, ok = fit_gp_density_advanced(
                 c_fit, data_density, data_err_density, fit_leg_density, min_len_scale_log=args.min_len
             )
 
             if not ok:
-                print(f"[SKIP] {t.upper()} {ch.upper()}: Advanced GP Matrix Inversion Failed.")
-                skipped += 1
+                for ax in [ax_spec, ax_pull]:
+                    ax.set_title(f'$M_{{{ch}}}$ (GP Inversion Failed)', fontsize=14)
+                    ax.axis('off')
                 continue
 
-            # Pulls calculation (Excluded Alt function here)
+            # Pulls calculation
             pulls_leg = np.where(data_err_density > 0, (data_density - fit_leg_density) / data_err_density, 0)
             pulls_gp = np.where(data_err_density > 0, (data_density - gp_density) / data_err_density, 0)
 
-            fig, axes = plt.subplots(4, 1, figsize=(12, 14), gridspec_kw={'height_ratios': [4, 1, 1, 1.5]})
-            plt.subplots_adjust(hspace=0.3)
-
-            # Panel 1: Spectra
-            ax = axes[0]
-            ax.errorbar(c_fit, data_density, yerr=data_err_density, fmt='ko', markersize=4, label='1% Data')
-            ax.plot(c_fit, fit_leg_density, 'r-', lw=2, label=f'Nominal Fit ({fit_name})')
+            # ==========================================
+            # PLOT 1: SPECTRA PANEL
+            # ==========================================
+            ax_spec.errorbar(c_fit, data_density, yerr=data_err_density, fmt='ko', markersize=4, label='1% Data')
+            ax_spec.plot(c_fit, fit_leg_density, 'r-', lw=2, label=f'Nominal Fit ({fit_name})')
             
             if alt_exists:
-                ax.plot(c_fit, fit_alt_density, 'g--', lw=2, label='Alternative Fit')
+                ax_spec.plot(c_fit, fit_alt_density, 'g--', lw=2, label='Alternative Fit')
                 
-            ax.plot(c_fit, gp_density, 'b-', lw=2, label='Advanced GP')
-            ax.fill_between(c_fit, gp_density - gp_err, gp_density + gp_err, color='b', alpha=0.2, label='GP Uncertainty')
-            ax.set_yscale('log')
-            ax.set_ylabel('Events / GeV', fontsize=12)
-            ax.set_title(f'Advanced Background Model Comparison: Trigger {t.upper()} | Channel {ch.upper()}', fontsize=14)
-            ax.legend(fontsize=12)
-            ax.grid(True, which="both", ls="--", alpha=0.3)
+            ax_spec.plot(c_fit, gp_density, 'b-', lw=2, label='Advanced GP')
+            ax_spec.fill_between(c_fit, gp_density - gp_err, gp_density + gp_err, color='b', alpha=0.2)
+            
+            ax_spec.set_yscale('log')
+            ax_spec.set_title(f'$M_{{{ch}}}$', fontsize=16, fontweight='bold')
+            ax_spec.set_xlabel('Invariant Mass [GeV]', fontsize=12)
+            ax_spec.set_ylabel('Events / GeV', fontsize=12)
+            ax_spec.legend(fontsize=10, loc='upper right') 
+            ax_spec.grid(True, which="both", ls="--", alpha=0.3)
 
-            # Panels 2 & 3: Pulls
-            for i, (p, color, name) in enumerate(zip([pulls_leg, pulls_gp], ['red', 'blue'], [fit_name, 'Advanced GP'])):
-                axes[i+1].axhline(0, color='k', ls='--')
-                axes[i+1].scatter(c_fit, p, color=color, s=15)
-                axes[i+1].set_ylabel(f'{name} Pulls', fontsize=12)
-                axes[i+1].set_ylim(-4, 4)
-                axes[i+1].set_xlim(c_fit[0], c_fit[-1])
-                
-            axes[2].fill_between(c_fit, -1, 1, color='b', alpha=0.1)
-            axes[2].set_xlabel('Invariant Mass [GeV]', fontsize=12)
-
-            # Panel 4: Pull Distributions + Gaussian Fits
-            ax = axes[3]
+            # ==========================================
+            # PLOT 2: PULL DISTRIBUTION PANEL
+            # ==========================================
             v_leg = pulls_leg[data_counts > 0]
             v_gp = pulls_gp[data_counts > 0]
             x_pdf = np.linspace(-4, 4, 100)
@@ -229,27 +221,34 @@ def main():
             if len(v_leg) > 0 and len(v_gp) > 0:
                 for v, color, label in zip([v_leg, v_gp], ['red', 'blue'], [fit_name, 'Advanced GP']):
                     mu, std = norm.fit(v)
-                    ax.hist(v, bins=np.linspace(-4, 4, 30), color=color, alpha=0.4, density=True, 
-                            label=f'{label} ($\mu={mu:.2f}, \sigma={std:.2f}$)')
-                    ax.plot(x_pdf, norm.pdf(x_pdf, mu, std), color=color, ls=':')
+                    
+                    # Compute KS test against standard normal N(0,1)
+                    # 'norm' defaults to loc=0, scale=1
+                    ks_stat, p_val = kstest(v, 'norm')
+                    
+                    ax_pull.hist(v, bins=np.linspace(-4, 4, 30), color=color, alpha=0.4, density=True, 
+                                 label=f'{label} ($\mu={mu:.2f}, \sigma={std:.2f}$) [KS p={format_pval(p_val)}]')
+                    ax_pull.plot(x_pdf, norm.pdf(x_pdf, mu, std), color=color, ls=':')
 
-                ax.plot(x_pdf, norm.pdf(x_pdf, 0, 1), 'k--', lw=2, label='Ideal $\mathcal{N}(0,1)$')
+                ax_pull.plot(x_pdf, norm.pdf(x_pdf, 0, 1), 'k--', lw=2, label='Ideal $\mathcal{N}(0,1)$')
             
-            ax.set_xlabel('Pull: (Data - Fit) / Err', fontsize=12)
-            ax.set_ylabel('Density', fontsize=12)
-            ax.legend(fontsize=11)
+            ax_pull.set_title(f'$M_{{{ch}}}$ Pull Distributions', fontsize=16, fontweight='bold')
+            ax_pull.set_xlabel('Pull: (Data - Fit) / Err', fontsize=12)
+            ax_pull.set_ylabel('Density', fontsize=12)
+            ax_pull.legend(fontsize=9, loc='upper left')
 
-            out_file = os.path.join(out_dir, f"AdvComparison_{t}_{ch}.png")
-            plt.savefig(out_file, bbox_inches='tight', dpi=300)
-            plt.close()
-            
-            completed += 1
-            sys.stdout.write(f"\rGenerated {completed} plots... ")
-            sys.stdout.flush()
+        # Formatting and Saving Grids
+        for fig, ftype in zip([fig_spec, fig_pull], ["spectra", "pulls"]):
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            out_file = os.path.join(out_dir, f"grid_{ftype}_{t}.png")
+            fig.savefig(out_file, bbox_inches='tight', dpi=200)
+            plt.close(fig)
 
-    print("\n" + "-" * 50)
-    print(f"Finished. Successfully generated: {completed} plots. Skipped: {skipped}")
-    print("Check the plots/advanced_comparisons/ directory.")
+        sys.stdout.write(f"\rGenerated 9-panel grids for {t.upper()}... ")
+        sys.stdout.flush()
+
+    print("\n" + "-" * 60)
+    print("Finished. Check the plots/advanced_comparisons_grid/ directory.")
 
 if __name__ == "__main__":
     main()

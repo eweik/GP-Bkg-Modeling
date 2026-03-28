@@ -11,7 +11,7 @@ fi
 
 ROOT_DIR="/afs/cern.ch/user/e/edweik/private/new_ad_files"
 FITS_DIR="/afs/cern.ch/user/e/edweik/private/GlobalSignificanceSearch/fits"
-MIN_LEN="0.12" # 12% mass resolution constraint
+MIN_LEN="0.15" # 15% mass resolution constraint
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
