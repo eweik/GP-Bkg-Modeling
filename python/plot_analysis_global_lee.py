@@ -17,6 +17,7 @@ def main():
     colors = {"naive": "red", "linear": "blue", "copula": "green"}
     # methods = ["naive", "linear"]
     # colors = {"naive": "red", "linear": "blue"}
+    method_label_map = {"naive": "Independent", "linear": "Overlap", "copula": "Copula"}
     
     os.makedirs("plots", exist_ok=True)
 
@@ -33,8 +34,9 @@ def main():
         for t in range(1, 8):
             trigger = f"t{t}"
             file_list = glob.glob(f"results/global_stat_{trigger}_{method}_*.npy")
+            file_list = None
             if not file_list:
-                file_list = glob.glob(f"results/merged/final_{trigger}_{method}.npy")
+                file_list = glob.glob(f"results/merged_nofit/final_{trigger}_{method}.npy")
                 
             if not file_list:
                 print(f"[{method.upper()}] Missing data for {trigger}. Cannot compute experiment-wide.")
@@ -82,11 +84,14 @@ def main():
         z_global_curve = stats.norm.isf(p_global_curve)
 
         valid = (z_global_curve > -10) & np.isfinite(z_global_curve)
+        method_label = method_label_map[method]
+        print(method_label)
         plt.plot(z_local_sorted[valid], z_global_curve[valid],
-                 label=f"{method.capitalize()} (N={min_toys})", color=colors[method], lw=2)
+                 label=f"{method_label} (N={min_toys})", color=colors[method], lw=2)
 
     # 7. Format the Plot
-    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - GP Background Model", fontsize=14)
+    # plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - GP Background Model", fontsize=14)
+    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - No Re-Fit", fontsize=14)
     plt.xlabel("Highest Observed Local Significance Across All Triggers ($Z_{BH}$)", fontsize=12)
     plt.ylabel("Analysis-Wide Global Significance ($Z_{global}$)", fontsize=12)
     
@@ -101,6 +106,7 @@ def main():
     plt.tight_layout()
     
     plot_out = "plots/Analysis_Wide_Global_Z.png"
+    plot_out = "plots/Analysis_Wide_Global_Z_wCopula.png"
     plt.savefig(plot_out, dpi=300)
     print(f"\n{'-'*65}\nMaster plot saved to {plot_out}\n")
 
