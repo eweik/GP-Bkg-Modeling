@@ -17,13 +17,23 @@ if os.getcwd() not in sys.path:
     sys.path.append(os.getcwd())
 
 from src.config import ATLAS_BINS, TRIGGER_OVERLAPS
-from src.models import FiveParam, FiveParam_alt
+from src.models import FiveParam
 from src.stats import fast_bumphunter_stat
 
-def get_optimized_background_kernel(centers, density, density_err, parametric_density, min_len_scale_log):
+def fit_gp_background(centers, density, density_err, parametric_density, min_len_scale_log, gp_mean_type):
+    """
+    Fits the GP once to establish the frozen, expected background.
+    """
     mask = density > 0
     X_log = np.log(centers[mask]).reshape(-1, 1)
-    y_target = np.log(density[mask] / np.maximum(parametric_density[mask], 1e-15))
+    
+    if gp_mean_type == 'zero':
+        # 0-mean function: GP learns the entire log-density directly
+        y_target = np.log(density[mask])
+    else:
+        # 5-param mean function: GP learns the residual
+        y_target = np.log(density[mask] / np.maximum(parametric_density[mask], 1e-15))
+
     y_err_target = density_err[mask] / density[mask]
 
     kernel = C(1.0, (1e-3, 1e2)) * RBF(length_scale=max(min_len_scale_log * 2.0, 0.5), length_scale_bounds=(min_len_scale_log, 5.0)) + WhiteKernel(noise_level=1.0, noise_level_bounds=(1e-5, 1e1))
@@ -32,39 +42,26 @@ def get_optimized_background_kernel(centers, density, density_err, parametric_de
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         gp.fit(X_log, y_target)
-    return gp.kernel_
-
-def fit_gp_locked(centers, toy_density, toy_err_density, prior_density, locked_kernel):
-    mask = toy_density > 0
-    if np.sum(mask) < 5:
-        return prior_density, False
-
-    X_log = np.log(centers[mask]).reshape(-1, 1)
-    y_target = np.log(toy_density[mask] / np.maximum(prior_density[mask], 1e-15))
-    y_err_target = toy_err_density[mask] / toy_density[mask]
-    
-    gp = GaussianProcessRegressor(kernel=locked_kernel, optimizer=None, alpha=y_err_target**2, normalize_y=False)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        gp.fit(X_log, y_target)
         
     X_full_log = np.log(centers).reshape(-1, 1)
     y_pred_target = gp.predict(X_full_log)
-    return prior_density * np.exp(y_pred_target), True
+    
+    if gp_mean_type == 'zero':
+        return np.exp(y_pred_target)
+    else:
+        return parametric_density * np.exp(y_pred_target)
 
 def main(args):
     os.makedirs("results", exist_ok=True)
     base_dir = os.getcwd() if os.path.exists("data") and os.path.exists("fits") else repo_root
 
     mass_types = ["jj", "bb", "jb", "je", "jm", "jg", "be", "bm", "bg"]
-    bkg_expectations, syst_envelopes, channel_info = {}, {}, {}
-    locked_kernels, bkg_prior_densities = {}, {}
+    bkg_expectations, channel_info = {}, {}
     overlap_map = TRIGGER_OVERLAPS.get(args.trigger.lower(), TRIGGER_OVERLAPS["default"])
     
-    print(f"Initializing Baselines for {args.trigger.upper()}")
+    print(f"Initializing Frozen Baselines for {args.trigger.upper()} | GP Mean: {args.gp_mean}")
     
-    # 1. Build Background and Lock GP Kernels (No ROOT files needed)
+    # 1. Build and Freeze the Expected Backgrounds
     for m in mass_types:
         fitfile_nom = os.path.join(base_dir, "fits", f"fitme_p5_{args.trigger}_{m}.json")
         if not os.path.exists(fitfile_nom):
@@ -79,69 +76,91 @@ def main(args):
             c = (v_bins[:-1] + v_bins[1:]) / 2
             widths = np.diff(v_bins)
 
+            # Baseline analytic expectation
             counts_nom = FiveParam(args.cms, c, *[float(p) for p in d_nom['parameters']]) 
 
             if np.sum(counts_nom) > 0:
-                bkg_expectations[m] = counts_nom
                 channel_info[m] = {'centers': c, 'bins': v_bins, 'widths': widths}
                 
-                bkg_density = counts_nom / widths
-                bkg_err_density = np.sqrt(np.maximum(counts_nom, 1.0)) / widths
-                
                 if args.fit:
-                    locked_kernels[m] = get_optimized_background_kernel(
-                        c, bkg_density, bkg_err_density, bkg_density, args.min_len
+                    # NOTE: To make the GP truly absorb the data's kinematic wiggles, 'bkg_density' 
+                    # should ideally be derived from the raw data histogram here, not 'counts_nom'.
+                    # It is left as counts_nom here to match your original script's flow.
+                    bkg_density = counts_nom / widths
+                    bkg_err_density = np.sqrt(np.maximum(counts_nom, 1.0)) / widths
+                    
+                    smoothed_density = fit_gp_background(
+                        c, bkg_density, bkg_err_density, bkg_density, args.min_len, args.gp_mean
                     )
-                bkg_prior_densities[m] = bkg_density
+                    bkg_expectations[m] = smoothed_density * widths
+                else:
+                    bkg_expectations[m] = counts_nom
                 
-        except Exception:
+        except Exception as e:
+            print(f"Failed to load baseline for {m}: {e}")
             continue
 
-    print(bkg_expectations["jj"])
-    print(sum(bkg_expectations["jj"]))
-
     if not bkg_expectations:
-        print("Error: No valid background fits found."); sys.exit(1)
+        print("Error: No valid background baselines established."); sys.exit(1)
 
-    # 2. Copula Setup
+    # 2. Copula & Matrix Setup
+    u_bounds = {}
     if args.method == "copula":
         copula_path = os.path.join(base_dir, "data", f"copula_{args.trigger}.npz")
         f = np.load(copula_path)
         matrix, col_names = f['copula'], list(f['columns'])
-        cdfs = {m: np.cumsum(b) / np.sum(b) for m, b in bkg_expectations.items()}
-        
-        mother_key = 'jj' if 'jj' in bkg_expectations else list(bkg_expectations.keys())[0]
-        n_mother_exp = np.sum(bkg_expectations[mother_key])
-        channel_scales = {m: np.sum(b) / n_mother_exp for m, b in bkg_expectations.items()}
 
-    elif args.method in ["poisson_event", "exclusive_categories"]:
+        # CDFs are strictly built from the frozen background
+        cdfs = {m: np.cumsum(b) / np.sum(b) for m, b in bkg_expectations.items()}
+
+        # LOAD ORIGINAL MASSES TO FIND EXACT U-BOUNDARIES
+        mass_path = os.path.join(base_dir, "data", f"masses_{args.trigger}.npz")
+        f_mass = np.load(mass_path)
+        mass_matrix_full = f_mass['masses']
+        cols_mass = list(f_mass['columns'])
+
+        for m, b in bkg_expectations.items():
+            idx = cols_mass.index(f"M{m}")
+            masses = mass_matrix_full[:, idx]
+            valid_masses = masses[masses > 0] * args.cms
+
+            fmin_val = channel_info[m]['bins'][0]
+            fmax_val = channel_info[m]['bins'][-1]
+
+            N_valid = len(valid_masses)
+            if N_valid > 0:
+                u_min = np.sum(valid_masses < fmin_val) / N_valid
+                u_max = np.sum(valid_masses <= fmax_val) / N_valid
+            else:
+                u_min, u_max = 0.0, 1.0
+
+            u_bounds[m] = (u_min, u_max)
+
+    elif args.method in ["poisson_event", "exclusive_categories", "decorrelated_bootstrap"]:
         mass_path = os.path.join(base_dir, "data", f"masses_{args.trigger}.npz")
         f = np.load(mass_path)
         mass_matrix, col_names = f['masses'], list(f['columns'])
         N_events = len(mass_matrix)
 
         if args.method == "exclusive_categories":
-            # Map events to orthogonal 9-bit categories
             valid_mask = mass_matrix > 0
             powers = 2 ** np.arange(len(col_names))
             event_patterns = valid_mask.dot(powers)
             unique_patterns = np.unique(event_patterns)
             pattern_indices = {p: np.where(event_patterns == p)[0] for p in unique_patterns}
 
-
     stats = []
-    fit_failures, attempts = 0, 0
+    attempts = 0
     max_attempts = args.toys * 50 
     
-    fit_status_msg = "WITH LOCKED GP FITTING" if args.fit else "WITHOUT GP FITTING (Nominal Bkg)"
-    print(f"\nGenerating {args.toys} {args.method} toys {fit_status_msg}...")
+    fit_status_msg = "USING GP-SMOOTHED FROZEN NULL" if args.fit else "USING ANALYTIC FROZEN NULL"
+    print(f"\nGenerating {args.toys} {args.method} toys | {fit_status_msg}...")
     start_time = time.time()
     
-    # 3. Toy Loop
+    # 3. Toy Loop (Now strictly evaluating, no fitting)
     while len(stats) < args.toys and attempts < max_attempts:
         attempts += 1
         toy_max_t = 0.0
-        toy_successful = True
         
         completed = len(stats)
         if completed > 0 and completed % max(1, (args.toys // 20)) == 0:
@@ -152,20 +171,7 @@ def main(args):
         if args.method == "naive":
             for m, b in bkg_expectations.items():
                 toy_counts = np.random.poisson(b)
-                c, w = channel_info[m]['centers'], channel_info[m]['widths']
-                
-                if args.fit:
-                    toy_density = toy_counts / w
-                    toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w
-                    
-                    gp_density, fit_ok = fit_gp_locked(c, toy_density, toy_err_density, bkg_prior_densities[m], locked_kernels[m])
-                    if not fit_ok: 
-                        toy_successful = False; break
-                    active_bkg = gp_density * w
-                else:
-                    active_bkg = b
-                
-                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, active_bkg))
+                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
         
         elif args.method == "linear":
             jj_b = bkg_expectations.get('jj', None)
@@ -178,13 +184,11 @@ def main(args):
                     toy_counts = jj_pseudo
                 else:
                     if jj_b is None:
-                        # Fallback if jj fit is entirely missing
                         toy_counts = np.random.poisson(b)
                     else:
                         ov_frac = overlap_map.get(m, 0.1)
                         m_centers = channel_info[m]['centers']
 
-                        # 1. Exact Bin Alignment
                         jj_b_aligned = np.zeros(len(b))
                         jj_pseudo_int = np.zeros(len(b), dtype=int)
 
@@ -195,90 +199,65 @@ def main(args):
                                 jj_b_aligned[i] = jj_b[min_idx]
                                 jj_pseudo_int[i] = jj_pseudo[min_idx]
 
-                        # 2. The Physical Cap
                         expected_overlap = np.minimum(b * ov_frac, jj_b_aligned)
-
-                        # 3. Capped Linear Transfer 
                         safe_jj_b = np.maximum(jj_b_aligned, 1e-15)
                         fluctuated_overlap = expected_overlap * (jj_pseudo_int / safe_jj_b)
-
-                        # 4. Fluctuate the independent remainder
                         expected_remaining = np.maximum(0.0, b - expected_overlap)
                         ind_counts = np.random.poisson(expected_remaining)
-
-                        # 5. Total channel toy
                         toy_counts = fluctuated_overlap + ind_counts
 
-                # --- GP Fitting and BumpHunter Evaluation ---
-                c, w = channel_info[m]['centers'], channel_info[m]['widths']
-                
-                if args.fit:
-                    toy_density = toy_counts / w
-                    toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w
+                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
 
-                    gp_density, fit_ok = fit_gp_locked(c, toy_density, toy_err_density, bkg_prior_densities[m], locked_kernels[m])
-                    if not fit_ok:
-                        toy_successful = False; break
-                    active_bkg = gp_density * w
-                else:
-                    active_bkg = b
-
-                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, active_bkg))
-
-
+        
         elif args.method == "copula":
-            sampled = matrix[np.random.choice(len(matrix), size=np.random.poisson(n_mother_exp), replace=True)]
+            # 1. Sample N times globally from the full dataset size
+            N_draw = np.random.poisson(len(matrix))
+            sampled_rows = matrix[np.random.choice(len(matrix), size=N_draw, replace=True)]
             
             for m, b in bkg_expectations.items():
                 idx = col_names.index(f"M{m}")
                 
-                expected_yield = np.sum(b)
-                target_n = np.random.poisson(expected_yield)
+                # 2. Extract raw uniform copula values
+                u_raw = sampled_rows[sampled_rows[:, idx] >= 0, idx]
                 
-                if target_n == 0:
+                # 3. Apply phase-space cuts in uniform space
+                u_min, u_max = u_bounds[m]
+                mask_in_window = (u_raw >= u_min) & (u_raw <= u_max)
+                u_in_window = u_raw[mask_in_window]
+                
+                if len(u_in_window) == 0:
                     toy_counts = np.zeros(len(b), dtype=int)
                 else:
-                    v_correlated = sampled[sampled[:, idx] >= 0, idx]
-                    k = len(v_correlated)
+                    # Jitter to break ties from empirical extraction
+                    u_jittered = u_in_window + np.random.uniform(-0.0002, 0.0002, size=len(u_in_window))
                     
-                    if k >= target_n:
-                        U_final = np.random.choice(v_correlated, size=target_n, replace=False)
-                    else:
-                        independent_n = target_n - k
-                        U_independent = np.random.uniform(0, 1, size=independent_n)
-                        U_final = np.concatenate([v_correlated, U_independent])
-                        
-                    U_final += np.random.uniform(-0.0002, 0.0002, size=target_n)
-                    U_final = np.abs(U_final)
-                    U_final = np.where(U_final >= 1.0, 1.99999 - U_final, U_final)
+                    # 4. Transform to strictly local truncated [0, 1) space
+                    u_trunc = (u_jittered - u_min) / (u_max - u_min)
                     
-                    toy_counts = np.bincount(np.searchsorted(cdfs[m], U_final), minlength=len(b))
+                    # Bound reflections for safety
+                    u_trunc = np.abs(u_trunc)
+                    u_trunc = np.where(u_trunc >= 1.0, 1.99999 - u_trunc, u_trunc)
+                    
+                    # 5. Map to physical binned mass via Inverse CDF
+                    toy_counts = np.bincount(np.searchsorted(cdfs[m], u_trunc), minlength=len(b))
                 
-                # --- GP Fitting and BumpHunter Evaluation ---
-                c, w = channel_info[m]['centers'], channel_info[m]['widths']
-                
-                if args.fit:
-                    toy_density = toy_counts / w
-                    toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w
-                    
-                    gp_density, fit_ok = fit_gp_locked(c, toy_density, toy_err_density, bkg_prior_densities[m], locked_kernels[m])
-                    if not fit_ok: 
-                        toy_successful = False; break
-                    
-                    active_bkg = gp_density * w
-                else:
-                    active_bkg = b
+                # NO ad-hoc scaling required. 
+                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
 
-                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, active_bkg))
-        
-        elif args.method in ["poisson_event", "exclusive_categories"]:
-            if args.method == "poisson_event":
-                # Approach 1: Draw X ~ Poisson(N) globally
+        elif args.method in ["poisson_event", "exclusive_categories", "decorrelated_bootstrap"]:
+            
+            if args.method == "decorrelated_bootstrap":
+                N_draw = np.random.poisson(N_events)
+                shuffled_matrix = np.copy(mass_matrix)
+                for col_idx in range(shuffled_matrix.shape[1]):
+                    np.random.shuffle(shuffled_matrix[:, col_idx])
+                sampled_rows = shuffled_matrix[np.random.choice(N_events, size=N_draw, replace=True)]
+                
+            elif args.method == "poisson_event":
                 N_draw = np.random.poisson(N_events)
                 sampled_rows = mass_matrix[np.random.choice(N_events, size=N_draw, replace=True)]
-                # event_weights = np.random.poisson(1.0, size=N_events)
-            else:
-                # Approach 2: Draw n_toy_c ~ Poisson(n_c) for each orthogonal 9-bit pattern
+                
+            elif args.method == "exclusive_categories":
                 sampled_rows_list = []
                 for p, indices in pattern_indices.items():
                     n_obs = len(indices)
@@ -291,47 +270,22 @@ def main(args):
                 else:
                     sampled_rows = np.empty((0, len(col_names)))
 
-            # Reconstruct the binned spectra from the sampled physical events
             for m, b in bkg_expectations.items():
                 idx = col_names.index(f"M{m}")
                 masses = sampled_rows[:, idx]
                 valid_masses = masses[masses > 0]  * args.cms
                 toy_counts, _ = np.histogram(valid_masses, bins=channel_info[m]['bins'])
-                # print(toy)
-                # print(b)
-                print(f"Mass: {m}")
-                print(f"Sum of toys: {sum(toy_counts)}")
-                print(f"Sum of background: {sum(b)}")
 
                 if np.sum(toy_counts) < 50: continue
 
-                if args.fit:
-                    toy_density = toy_counts / w
-                    toy_err_density = np.sqrt(np.maximum(toy_counts, 1.0)) / w
-                    
-                    gp_density, fit_ok = fit_gp_locked(c, toy_density, toy_err_density, bkg_prior_densities[m], locked_kernels[m])
-                    if not fit_ok: 
-                        toy_successful = False; break
-                    
-                    active_bkg = gp_density * w
-                else:
-                    # CRITICAL NORMALIZATION FIX: Scale frozen background to fluctuating toy integral
-                    # active_bkg = b * (np.sum(toy) / np.sum(b))
-                    active_bkg = b
+                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
 
-                toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, active_bkg))
-            print(f"Max-test-statistic: {toy_max_t}")
-
-
-        if toy_successful:
-            stats.append(toy_max_t)
-        else:
-            fit_failures += 1
+        stats.append(toy_max_t)
 
     sys.stdout.write(f"\rProgress: [{'=' * 20}] 100% \n")
     sys.stdout.flush()
 
-    out_file = os.path.join("results", f"global_stat_GP_{args.trigger}_{args.method}_{args.jobid}.npy")
+    out_file = os.path.join("results", f"global_stat_{args.trigger}_{args.method}_{args.gp_mean}_{args.jobid}.npy")
     np.save(out_file, stats)
     
     elapsed_time = time.time() - start_time
@@ -340,7 +294,6 @@ def main(args):
     
     print("\n" + "=" * 60)
     print(f"Toys Generated:               {len(stats)}")
-    print(f"Fit Failures Skipped:         {fit_failures}")
     print(f"Time Elapsed:                 {int(hours)}h {int(minutes)}m {seconds:.2f}s")
     print(f"Saved array to:               {out_file}")
     print("=" * 60)
@@ -349,9 +302,10 @@ if __name__ == '__main__':
     p = ArgumentParser()
     p.add_argument('--trigger', required=True)
     p.add_argument('--toys', type=int, default=1000)
-    p.add_argument('--method', choices=["naive", "copula", "linear", "poisson_event", "exclusive_categories"], required=True)
-    p.add_argument('--cms', type=float, default=13600.)
+    p.add_argument('--method', choices=["naive", "copula", "linear", "poisson_event", "exclusive_categories", "decorrelated_bootstrap"], required=True)
+    p.add_argument('--gp-mean', choices=['5param', 'zero'], default='zero', help="Mean function used by the Gaussian Process")
+    p.add_argument('--cms', type=float, default=13000.)
     p.add_argument('--jobid', type=str, default="local")
     p.add_argument('--min-len', type=float, default=0.15)
-    p.add_argument('--fit', type=lambda x: (str(x).lower() == 'true'), default=False, help="Set to true to use GP fitting, false to use nominal analytic background (default: true)")
+    p.add_argument('--fit', type=lambda x: (str(x).lower() == 'true'), default=True, help="Set to true to generate toys using a GP-smoothed frozen background")
     main(p.parse_args())
