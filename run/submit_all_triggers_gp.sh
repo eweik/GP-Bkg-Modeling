@@ -2,12 +2,12 @@
 
 # Default values for massive generation
 TOTAL_TOYS=${1:-100000}
-TOYS_PER_JOB=${2:-1000}
+TOYS_PER_JOB=${2:-20000}
 MIN_LEN="0.15"
 
 # Calculate jobs per method
 N_JOBS=$((TOTAL_TOYS / TOYS_PER_JOB))
-TOTAL_SUBMISSIONS=$((7 * 3 * N_JOBS))
+TOTAL_SUBMISSIONS=$((7 * 4 * N_JOBS))
 
 # Ensure local directories exist before submission
 mkdir -p run/logs results
@@ -27,8 +27,9 @@ for TRIGGER in t1 t2 t3 t4 t5 t6 t7; do
     echo ">>> Queuing Trigger: $TRIGGER"
     
     # Loop over all 3 methods
+    for METHOD in naive copula poisson_event decorrelated_bootstrap; do
     # for METHOD in naive copula; do
-    for METHOD in linear; do
+    # for METHOD in linear; do
         condor_submit run/submit_toys_gp.sub \
             trigger=$TRIGGER \
             method=$METHOD \

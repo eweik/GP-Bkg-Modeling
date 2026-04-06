@@ -26,7 +26,8 @@ echo "================================================="
 
 # Loop through all three methods and submit them
 # for METHOD in naive linear copula; do
-for METHOD in linear; do
+# for METHOD in naive ; do
+for METHOD in naive copula poisson_bootstrap decorrelated_bootstrap; do
     echo "Submitting $METHOD..."
     condor_submit run/submit_toys_gp.sub \
         trigger=$TRIGGER \

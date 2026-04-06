@@ -14,7 +14,8 @@ transfer_input_files    = src, python, fits, data
 transfer_output_files   = results
 
 # +JobFlavour             = "workday"
-+JobFlavour             = "longlunch"
+# +JobFlavour             = "longlunch"
++JobFlavour             = "microcentury"
 request_cpus            = 1
 request_memory          = 2GB
 max_retries             = 3

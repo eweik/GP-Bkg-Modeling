@@ -13,11 +13,14 @@ def main():
     args = parser.parse_args()
 
     target_Z = args.ExpectedLocalZvalue
-    methods = ["naive", "linear", "copula"]
-    colors = {"naive": "red", "linear": "blue", "copula": "green"}
+    methods = ["naive", "linear", "copula", "poisson_event", "decorrelated_bootstrap"]
+    colors = {"naive": "red", "linear": "blue", "copula": "orange",
+                  "poisson_event": "green", "exclusive_categories": "purple",
+                  "decorrelated_bootstrap": "olive"}
     # methods = ["naive", "linear"]
     # colors = {"naive": "red", "linear": "blue"}
-    method_label_map = {"naive": "Independent", "linear": "Overlap", "copula": "Copula"}
+    method_label_map = {"naive": "Independent", "linear": "Overlap", "copula": "Copula",
+                        "poisson_event": "Poisson Bootstrap", "decorrelated_bootstrap": "Decorrelated Bootstrap"}
     
     os.makedirs("plots", exist_ok=True)
 
@@ -36,7 +39,7 @@ def main():
             file_list = glob.glob(f"results/global_stat_{trigger}_{method}_*.npy")
             file_list = None
             if not file_list:
-                file_list = glob.glob(f"results/merged_nofit/final_{trigger}_{method}.npy")
+                file_list = glob.glob(f"results/merged/final_{trigger}_{method}.npy")
                 
             if not file_list:
                 print(f"[{method.upper()}] Missing data for {trigger}. Cannot compute experiment-wide.")
@@ -91,7 +94,7 @@ def main():
 
     # 7. Format the Plot
     # plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - GP Background Model", fontsize=14)
-    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - No Re-Fit", fontsize=14)
+    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance", fontsize=14)
     plt.xlabel("Highest Observed Local Significance Across All Triggers ($Z_{BH}$)", fontsize=12)
     plt.ylabel("Analysis-Wide Global Significance ($Z_{global}$)", fontsize=12)
     

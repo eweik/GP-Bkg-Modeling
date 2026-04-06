@@ -31,7 +31,7 @@ def fit_gp_background(centers, density, density_err, parametric_density, min_len
         # 0-mean function: GP learns the entire log-density directly
         y_target = np.log(density[mask])
     else:
-        # 5-param mean function: GP learns the residual
+        # 5-param mean function: GP learns the residual away from the analytic fit
         y_target = np.log(density[mask] / np.maximum(parametric_density[mask], 1e-15))
 
     y_err_target = density_err[mask] / density[mask]
@@ -60,7 +60,16 @@ def main(args):
     overlap_map = TRIGGER_OVERLAPS.get(args.trigger.lower(), TRIGGER_OVERLAPS["default"])
     
     print(f"Initializing Frozen Baselines for {args.trigger.upper()} | GP Mean: {args.gp_mean}")
-    
+
+    # --- PRE-LOAD RAW DATA FOR GP FITTING & TOY LOGIC ---
+    mass_path = os.path.join(base_dir, "data", f"masses_{args.trigger}.npz")
+    if not os.path.exists(mass_path):
+        print(f"Error: Mass data not found at {mass_path}"); sys.exit(1)
+        
+    f_mass = np.load(mass_path)
+    mass_matrix, col_names = f_mass['masses'], list(f_mass['columns'])
+    N_events = len(mass_matrix)
+
     # 1. Build and Freeze the Expected Backgrounds
     for m in mass_types:
         fitfile_nom = os.path.join(base_dir, "fits", f"fitme_p5_{args.trigger}_{m}.json")
@@ -83,14 +92,17 @@ def main(args):
                 channel_info[m] = {'centers': c, 'bins': v_bins, 'widths': widths}
                 
                 if args.fit:
-                    # NOTE: To make the GP truly absorb the data's kinematic wiggles, 'bkg_density' 
-                    # should ideally be derived from the raw data histogram here, not 'counts_nom'.
-                    # It is left as counts_nom here to match your original script's flow.
-                    bkg_density = counts_nom / widths
-                    bkg_err_density = np.sqrt(np.maximum(counts_nom, 1.0)) / widths
+                    # Extract RAW data to train the GP
+                    idx = col_names.index(f"M{m}")
+                    valid_masses = mass_matrix[mass_matrix[:, idx] > 0, idx] * args.cms
+                    raw_counts, _ = np.histogram(valid_masses, bins=v_bins)
+                    
+                    bkg_density = raw_counts / widths
+                    bkg_err_density = np.sqrt(np.maximum(raw_counts, 1.0)) / widths
+                    parametric_density = counts_nom / widths
                     
                     smoothed_density = fit_gp_background(
-                        c, bkg_density, bkg_err_density, bkg_density, args.min_len, args.gp_mean
+                        c, bkg_density, bkg_err_density, parametric_density, args.min_len, args.gp_mean
                     )
                     bkg_expectations[m] = smoothed_density * widths
                 else:
@@ -108,20 +120,15 @@ def main(args):
     if args.method == "copula":
         copula_path = os.path.join(base_dir, "data", f"copula_{args.trigger}.npz")
         f = np.load(copula_path)
-        matrix, col_names = f['copula'], list(f['columns'])
+        matrix, col_names_cop = f['copula'], list(f['columns'])
 
         # CDFs are strictly built from the frozen background
         cdfs = {m: np.cumsum(b) / np.sum(b) for m, b in bkg_expectations.items()}
 
-        # LOAD ORIGINAL MASSES TO FIND EXACT U-BOUNDARIES
-        mass_path = os.path.join(base_dir, "data", f"masses_{args.trigger}.npz")
-        f_mass = np.load(mass_path)
-        mass_matrix_full = f_mass['masses']
-        cols_mass = list(f_mass['columns'])
-
+        # Find exact U-boundaries using the pre-loaded mass matrix
         for m, b in bkg_expectations.items():
-            idx = cols_mass.index(f"M{m}")
-            masses = mass_matrix_full[:, idx]
+            idx = col_names.index(f"M{m}")
+            masses = mass_matrix[:, idx]
             valid_masses = masses[masses > 0] * args.cms
 
             fmin_val = channel_info[m]['bins'][0]
@@ -136,18 +143,12 @@ def main(args):
 
             u_bounds[m] = (u_min, u_max)
 
-    elif args.method in ["poisson_event", "exclusive_categories", "decorrelated_bootstrap"]:
-        mass_path = os.path.join(base_dir, "data", f"masses_{args.trigger}.npz")
-        f = np.load(mass_path)
-        mass_matrix, col_names = f['masses'], list(f['columns'])
-        N_events = len(mass_matrix)
-
-        if args.method == "exclusive_categories":
-            valid_mask = mass_matrix > 0
-            powers = 2 ** np.arange(len(col_names))
-            event_patterns = valid_mask.dot(powers)
-            unique_patterns = np.unique(event_patterns)
-            pattern_indices = {p: np.where(event_patterns == p)[0] for p in unique_patterns}
+    if args.method == "exclusive_categories":
+        valid_mask = mass_matrix > 0
+        powers = 2 ** np.arange(len(col_names))
+        event_patterns = valid_mask.dot(powers)
+        unique_patterns = np.unique(event_patterns)
+        pattern_indices = {p: np.where(event_patterns == p)[0] for p in unique_patterns}
 
     stats = []
     attempts = 0
@@ -175,9 +176,9 @@ def main(args):
         
         elif args.method == "linear":
             jj_b = bkg_expectations.get('jj', None)
+            jj_centers = channel_info['jj']['centers'] if jj_b is not None else None
             if jj_b is not None:
                 jj_pseudo = np.random.poisson(jj_b)
-                jj_centers = channel_info['jj']['centers']
 
             for m, b in bkg_expectations.items():
                 if m == 'jj':
@@ -208,14 +209,13 @@ def main(args):
 
                 toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
 
-        
         elif args.method == "copula":
             # 1. Sample N times globally from the full dataset size
             N_draw = np.random.poisson(len(matrix))
             sampled_rows = matrix[np.random.choice(len(matrix), size=N_draw, replace=True)]
             
             for m, b in bkg_expectations.items():
-                idx = col_names.index(f"M{m}")
+                idx = col_names_cop.index(f"M{m}")
                 
                 # 2. Extract raw uniform copula values
                 u_raw = sampled_rows[sampled_rows[:, idx] >= 0, idx]
@@ -232,7 +232,7 @@ def main(args):
                     u_jittered = u_in_window + np.random.uniform(-0.0002, 0.0002, size=len(u_in_window))
                     
                     # 4. Transform to strictly local truncated [0, 1) space
-                    u_trunc = (u_jittered - u_min) / (u_max - u_min)
+                    u_trunc = (u_jittered - u_min) / max(u_max - u_min, 1e-10)
                     
                     # Bound reflections for safety
                     u_trunc = np.abs(u_trunc)
@@ -241,7 +241,6 @@ def main(args):
                     # 5. Map to physical binned mass via Inverse CDF
                     toy_counts = np.bincount(np.searchsorted(cdfs[m], u_trunc), minlength=len(b))
                 
-                # NO ad-hoc scaling required. 
                 toy_max_t = max(toy_max_t, fast_bumphunter_stat(toy_counts, b))
 
         elif args.method in ["poisson_event", "exclusive_categories", "decorrelated_bootstrap"]:
@@ -273,7 +272,7 @@ def main(args):
             for m, b in bkg_expectations.items():
                 idx = col_names.index(f"M{m}")
                 masses = sampled_rows[:, idx]
-                valid_masses = masses[masses > 0]  * args.cms
+                valid_masses = masses[masses > 0] * args.cms
                 toy_counts, _ = np.histogram(valid_masses, bins=channel_info[m]['bins'])
 
                 if np.sum(toy_counts) < 50: continue
