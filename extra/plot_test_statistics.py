@@ -15,7 +15,7 @@ def main():
         # "linear": {"color": "orange", "label": "Linear (Bin Locked)"},
         "copula": {"color": "green", "label": "Empirical Copula (Migrated)"},
         "poisson_event": {"color": "blue", "label": "Poisson Bootstrap"},
-        "decorrelated_bootstrap": {"color": "orange", "label": "Decorrelated Bootstrap"}
+        # "decorrelated_bootstrap": {"color": "orange", "label": "Decorrelated Bootstrap"}
     }
                 
     plt.figure(figsize=(10, 7))

@@ -12,7 +12,6 @@ __pycache__/
 results/
 data/
 fits/
-extra/
 plots/*.pdf
 plots/*.png
 plots/

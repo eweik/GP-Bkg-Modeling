@@ -93,8 +93,8 @@ def main():
                  label=f"{method_label} (N={min_toys})", color=colors[method], lw=2)
 
     # 7. Format the Plot
-    # plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance - GP Background Model", fontsize=14)
-    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance", fontsize=14)
+    plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance | GP Background Model", fontsize=14)
+    # plt.title("Analysis-Wide Global Significance vs. BumpHunter Significance", fontsize=14)
     plt.xlabel("Highest Observed Local Significance Across All Triggers ($Z_{BH}$)", fontsize=12)
     plt.ylabel("Analysis-Wide Global Significance ($Z_{global}$)", fontsize=12)
     
@@ -109,7 +109,7 @@ def main():
     plt.tight_layout()
     
     plot_out = "plots/Analysis_Wide_Global_Z.png"
-    plot_out = "plots/Analysis_Wide_Global_Z_wCopula.png"
+    plot_out = "plots/Analysis_Wide_Global_Z_GP.png"
     plt.savefig(plot_out, dpi=300)
     print(f"\n{'-'*65}\nMaster plot saved to {plot_out}\n")
 
