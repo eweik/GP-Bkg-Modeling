@@ -26,7 +26,8 @@ def get_gp_fit(centers, density, density_err, min_len_scale_log=0.15):
     y_err_target = density_err[mask] / density[mask]
 
     # Cleaned kernel: Removed WhiteKernel, relying strictly on alpha (data errors)
-    kernel = C(1.0, (1e-3, 1e2)) * RBF(length_scale=0.3, length_scale_bounds=(min_len_scale_log, 5.0))
+    #kernel = C(1.0, (1e-3, 1e2)) * RBF(length_scale=0.3, length_scale_bounds=(min_len_scale_log, 5.0))
+    kernel = C(1.0, (1e-3, 1e2)) * RBF(length_scale=min_len_scale_log, length_scale_bounds=(min_len_scale_log, 5.0))
     gp = GaussianProcessRegressor(kernel=kernel, alpha=y_err_target**2, n_restarts_optimizer=5, normalize_y=False)
     
     with warnings.catch_warnings():

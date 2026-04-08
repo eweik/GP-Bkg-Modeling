@@ -3,7 +3,8 @@
 # Default values for massive generation
 TOTAL_TOYS=${1:-100000}
 TOYS_PER_JOB=${2:-20000}
-MIN_LEN="0.15"
+# MIN_LEN="0.15"
+MIN_LEN="0.01"
 
 # Calculate jobs per method
 N_JOBS=$((TOTAL_TOYS / TOYS_PER_JOB))

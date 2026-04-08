@@ -38,7 +38,8 @@ def fit_gp_background(centers, density, density_err, parametric_density, min_len
 
     # Correct, physics-driven kernel:
     kernel = C(1.0, (1e-3, 1e2)) * RBF(
-        length_scale=max(min_len_scale_log * 2.0, 0.5),
+        # length_scale=max(min_len_scale_log * 2.0, 0.5),
+        length_scale=max(min_len_scale_log, 1e-4),
         length_scale_bounds=(min_len_scale_log, 5.0)
     )
     gp = GaussianProcessRegressor(kernel=kernel, alpha=y_err_target**2, n_restarts_optimizer=5, normalize_y=False)
