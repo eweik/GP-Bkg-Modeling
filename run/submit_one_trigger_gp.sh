@@ -4,7 +4,7 @@
 TRIGGER=${1:-"t1"}
 TOTAL_TOYS=${2:-100000}
 TOYS_PER_JOB=${3:-1000}
-MIN_LEN=${4:-0.15}
+MIN_LEN=${4:-0.01}
 
 # Calculate how many jobs are needed per method
 N_JOBS=$((TOTAL_TOYS / TOYS_PER_JOB))
@@ -27,7 +27,8 @@ echo "================================================="
 # Loop through all three methods and submit them
 # for METHOD in naive linear copula; do
 # for METHOD in naive ; do
-for METHOD in naive copula poisson_bootstrap decorrelated_bootstrap; do
+# for METHOD in naive copula poisson_bootstrap decorrelated_bootstrap; do
+for METHOD in poisson_event; do
     echo "Submitting $METHOD..."
     condor_submit run/submit_toys_gp.sub \
         trigger=$TRIGGER \

@@ -7,7 +7,7 @@ import numpy as np
 import warnings
 from argparse import ArgumentParser
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.dirname(current_script_dir)
@@ -20,7 +20,8 @@ from src.config import ATLAS_BINS, TRIGGER_OVERLAPS
 from src.models import FiveParam
 from src.stats import fast_bumphunter_stat
 
-def fit_gp_background(centers, density, density_err, parametric_density, min_len_scale_log, gp_mean_type):
+# --- ADDED max_len_scale_log to the function arguments ---
+def fit_gp_background(centers, density, density_err, parametric_density, min_len_scale_log, max_len_scale_log, gp_mean_type):
     """
     Fits the GP once to establish the frozen, expected background.
     """
@@ -36,11 +37,10 @@ def fit_gp_background(centers, density, density_err, parametric_density, min_len
 
     y_err_target = density_err[mask] / density[mask]
 
-    # Correct, physics-driven kernel:
+    # --- THE FIX: Clamp both the min and max bounds ---
     kernel = C(1.0, (1e-3, 1e2)) * RBF(
-        # length_scale=max(min_len_scale_log * 2.0, 0.5),
         length_scale=max(min_len_scale_log, 1e-4),
-        length_scale_bounds=(min_len_scale_log, 5.0)
+        length_scale_bounds=(min_len_scale_log, max_len_scale_log) 
     )
     gp = GaussianProcessRegressor(kernel=kernel, alpha=y_err_target**2, n_restarts_optimizer=5, normalize_y=False)
     
@@ -106,8 +106,10 @@ def main(args):
                     bkg_err_density = np.sqrt(np.maximum(raw_counts, 1.0)) / widths
                     parametric_density = counts_nom / widths
                     
+                    # --- ADDED args.max_len to the function call ---
                     smoothed_density = fit_gp_background(
-                        c, bkg_density, bkg_err_density, parametric_density, args.min_len, args.gp_mean
+                        c, bkg_density, bkg_err_density, parametric_density, 
+                        args.min_len, args.max_len, args.gp_mean
                     )
                     bkg_expectations[m] = smoothed_density * widths
                 else:
@@ -159,7 +161,7 @@ def main(args):
     attempts = 0
     max_attempts = args.toys * 50 
     
-    fit_status_msg = "USING GP-SMOOTHED FROZEN NULL" if args.fit else "USING ANALYTIC FROZEN NULL"
+    fit_status_msg = f"USING GP-SMOOTHED NULL (l in [{args.min_len}, {args.max_len}])" if args.fit else "USING ANALYTIC FROZEN NULL"
     print(f"\nGenerating {args.toys} {args.method} toys | {fit_status_msg}...")
     start_time = time.time()
     
@@ -310,6 +312,8 @@ if __name__ == '__main__':
     p.add_argument('--gp-mean', choices=['5param', 'zero'], default='zero', help="Mean function used by the Gaussian Process")
     p.add_argument('--cms', type=float, default=13000.)
     p.add_argument('--jobid', type=str, default="local")
-    p.add_argument('--min-len', type=float, default=0.15)
+    p.add_argument('--min-len', type=float, default=0.01)
+    # --- ADDED max-len argument ---
+    p.add_argument('--max-len', type=float, default=0.02) 
     p.add_argument('--fit', type=lambda x: (str(x).lower() == 'true'), default=True, help="Set to true to generate toys using a GP-smoothed frozen background")
     main(p.parse_args())
