@@ -119,7 +119,8 @@ def main():
         # Plot Ratio
         ratio_5p = np.where(density_5p > 0, bkg_density / density_5p, np.nan)
         ratio_gp = np.where(gp_density > 0, bkg_density / gp_density, np.nan)
-        ratio_err = np.where(bkg_density > 0, bkg_err_density / bkg_density, 0)
+        # ratio_err = np.where(bkg_density > 0, bkg_err_density / bkg_density, 0)
+        ratio_err = np.divide(bkg_err_density, bkg_density, out=np.zeros_like(bkg_density), where=(bkg_density > 0))
 
         ax_ratio.errorbar(c[valid], ratio_5p[valid], yerr=ratio_err[valid]*ratio_5p[valid], 
                           fmt='o', color='dodgerblue', markersize=3, alpha=0.6)
@@ -136,11 +137,11 @@ def main():
             ax_ratio.tick_params(labelleft=False)
 
     plt.suptitle(f"Background Modeling Comparison: 5-Parameter vs Gaussian Process\nTrigger: {trigger.upper()} | Length Scale Constraint: $\ell \in [{args.min_len}, {args.max_len}]$", fontsize=22, fontweight='bold')
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.subplots_adjust(top=0.92)
     
     os.makedirs(os.path.join(base_dir, "plots"), exist_ok=True)
     # Tag the output file with the min len so you don't overwrite your good plots!
-    out_path = os.path.join(base_dir, "plots", f"gp_vs_5param_9panel_{trigger}_len{args.min_len}.png")
+    out_path = os.path.join(base_dir, "plots", f"gp_vs_5param_9panel_{trigger}_len{int(100*args.min_len)}.png")
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
     print(f"Saved 9-panel diagnostic plot to {out_path}")
 
